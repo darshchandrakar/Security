@@ -1,138 +1,151 @@
 $ErrorActionPreference="SilentlyContinue"
 
-$Base="$PSScriptRoot"
+$Base=$PSScriptRoot
 
 $LogDir="$Base\logs"
-$HashDir="$Base\hashes"
 $BrowserDir="$Base\browser"
 $NetDir="$Base\network"
 $PersistenceDir="$Base\persistence"
 
-New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-New-Item -ItemType Directory -Force -Path $HashDir | Out-Null
-New-Item -ItemType Directory -Force -Path $BrowserDir | Out-Null
-New-Item -ItemType Directory -Force -Path $NetDir | Out-Null
-New-Item -ItemType Directory -Force -Path $PersistenceDir | Out-Null
+New-Item -ItemType Directory -Force -Path $LogDir,$BrowserDir,$NetDir,$PersistenceDir | Out-Null
 
 $Report="$LogDir\Audit_Report.txt"
-$ThreatFile="$LogDir\Threat_Score.txt"
+$ThreatFile="$LogDir\Threat_Report.txt"
 
 $RiskScore=0
 $ThreatReasons=@()
 
+"LEVEL 7 SECURITY AUDIT" | Out-File $Report
+"Date: $(Get-Date)" | Out-File $Report -Append
+
+
 function Section($name){
+
 "" | Out-File $Report -Append
-"==========================" | Out-File $Report -Append
+"=============================" | Out-File $Report -Append
 $name | Out-File $Report -Append
-"==========================" | Out-File $Report -Append
+"=============================" | Out-File $Report -Append
+
 }
 
 function Add-Threat($points,$reason){
+
+if($ThreatReasons -notcontains $reason){
+
 $script:RiskScore += $points
 $script:ThreatReasons += "$points : $reason"
+
 }
 
-"LEVEL 5 SECURITY AUDIT" | Out-File $Report
-"Date: $(Get-Date)" | Out-File $Report -Append
+}
 
-# ----------------------------
-Section "SYSTEM INFO"
+function Add-Info($msg){
+
+"INFO : $msg" | Out-File $ThreatFile -Append
+
+}
+
+
+# -----------------------------
+Section "SYSTEM INFORMATION"
+
 systeminfo | Out-File $Report -Append
 
-# ----------------------------
-Section "LOCAL USERS"
-Get-LocalUser | Out-File $Report -Append
 
-# ----------------------------
-Section "ADMINISTRATORS"
-
-$admins=Get-LocalGroupMember Administrators
-$admins | Out-File $Report -Append
-
-if($admins.Count -gt 3){
-Add-Threat 2 "Large number of administrator accounts"
-}
-
-# ----------------------------
+# -----------------------------
 Section "RUNNING PROCESSES"
 
-$proc=Get-CimInstance Win32_Process |
-Select Name,ProcessId,ExecutablePath
+$proc=Get-CimInstance Win32_Process
 
-$proc | Out-File $Report -Append
+$proc |
+Select Name,ProcessId,ExecutablePath |
+Out-File "$LogDir\processes.txt"
 
-$suspicious=@(
-"powershell",
-"cmd",
-"wscript",
-"cscript",
-"mshta",
-"rundll32",
-"bitsadmin",
-"certutil"
-)
+if($proc.Count -gt 250){
 
-foreach($p in $proc){
-
-foreach($s in $suspicious){
-
-if($p.Name -like "*$s*"){
-Add-Threat 1 "Script or living-off-the-land process running: $($p.Name)"
-}
+Add-Info "Large number of running processes detected"
 
 }
 
-}
 
-# ----------------------------
+# -----------------------------
 Section "NETWORK CONNECTIONS"
 
-Get-NetTCPConnection |
-Select LocalAddress,LocalPort,RemoteAddress,RemotePort,State,OwningProcess |
+$connections=Get-NetTCPConnection
+
+$connections |
+Select LocalAddress,LocalPort,RemoteAddress,RemotePort,State |
 Out-File "$NetDir\network_connections.txt"
 
-# ----------------------------
-Section "OPEN PORTS"
-netstat -ano | Out-File "$NetDir\open_ports.txt"
+if($connections.Count -gt 30){
 
-# ----------------------------
-Section "DNS CACHE"
-ipconfig /displaydns | Out-File "$NetDir\dns_cache.txt"
+Add-Info "Many active network connections"
 
-# ----------------------------
-Section "SERVICES"
+}
 
-$services=Get-Service
-$services | Out-File $Report -Append
+foreach($c in $connections){
 
-# ----------------------------
+if($c.RemotePort -eq 4444 -or $c.RemotePort -eq 1337){
+
+Add-Threat 4 "Connection to suspicious remote port $($c.RemotePort)"
+
+}
+
+}
+
+
+# -----------------------------
 Section "SCHEDULED TASKS"
 
 $tasks=Get-ScheduledTask
-$tasks | Out-File "$PersistenceDir\scheduled_tasks.txt"
 
-if($tasks.Count -gt 120){
-Add-Threat 1 "Large number of scheduled tasks"
+$tasks |
+Select TaskName,State |
+Out-File "$PersistenceDir\scheduled_tasks.txt"
+
+$TaskWhitelist=@(
+
+"Windows Defender Cache Maintenance",
+"Windows Defender Cleanup",
+"Windows Defender Scheduled Scan",
+"Windows Defender Verification",
+"Automatic-Device-Join",
+"Recovery-Check",
+"Monitoring"
+
+)
+
+foreach($t in $tasks){
+
+if($TaskWhitelist -notcontains $t.TaskName){
+
+$action=$t.Actions.Execute
+
+if($action -match "powershell.exe|cmd.exe|wscript.exe"){
+
+Add-Threat 2 "Script-based scheduled task: $($t.TaskName)"
+
 }
 
-# ----------------------------
-Section "STARTUP FOLDERS"
+}
 
-Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup" |
-Out-File "$PersistenceDir\user_startup.txt"
+}
 
-Get-ChildItem "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup" |
-Out-File "$PersistenceDir\system_startup.txt"
+if($tasks.Count -gt 100){
 
-# ----------------------------
+Add-Info "System contains many scheduled tasks (normal for Windows)"
+
+}
+
+
+# -----------------------------
 Section "REGISTRY AUTORUN LOCATIONS"
 
 $autoruns=@(
+
 "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run",
-"HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce",
-"HKCU:\Software\Microsoft\Windows\CurrentVersion\Run",
-"HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce",
-"HKLM:\Software\Microsoft\Windows NT\CurrentVersion\Winlogon"
+"HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+
 )
 
 foreach($path in $autoruns){
@@ -140,13 +153,16 @@ foreach($path in $autoruns){
 if(Test-Path $path){
 
 $data=Get-ItemProperty $path
-$data | Out-File "$PersistenceDir\registry_autoruns.txt" -Append
+
+$data | Out-File "$PersistenceDir\autoruns.txt" -Append
 
 foreach($prop in $data.PSObject.Properties){
 
-if($prop.Value -match "powershell"){
-Add-Threat 3 "PowerShell persistence found"
-}
+$val=$prop.Value
+
+if($val -match "powershell.exe" -or $val -match "pwsh.exe"){
+
+Add-Threat 4 "PowerShell startup command detected: $val"
 
 }
 
@@ -154,118 +170,133 @@ Add-Threat 3 "PowerShell persistence found"
 
 }
 
-# ----------------------------
-Section "UNSIGNED EXECUTABLES"
-
-$scan=@(
-"C:\Users",
-"C:\Program Files",
-"C:\Program Files (x86)"
-)
-
-foreach($path in $scan){
-
-Get-ChildItem $path -Recurse -File |
-Where {$_.Extension -eq ".exe"} |
-ForEach-Object{
-
-try{
-
-$sig=Get-AuthenticodeSignature $_.FullName
-
-if($sig.Status -ne "Valid"){
-Add-Threat 1 "Unsigned executable: $($_.FullName)"
 }
 
-}catch{}
 
-}
-
-}
-
-# ----------------------------
-Section "SYSTEM HASHES"
-
-Get-ChildItem C:\Windows\System32 -File |
-ForEach-Object{
-
-try{
-Get-FileHash $_.FullName
-}catch{}
-
-} | Export-Csv "$HashDir\system_hashes.csv" -NoTypeInformation
-
-# ----------------------------
-Section "WINDOWS DEFENDER"
+# -----------------------------
+Section "WINDOWS DEFENDER STATUS"
 
 $def=Get-MpComputerStatus
-$def | Out-File $Report -Append
+
+$def | Out-File "$LogDir\defender_status.txt"
 
 if($def.AntivirusEnabled -eq $false){
-Add-Threat 5 "Antivirus disabled"
+
+Add-Threat 6 "Windows Defender disabled"
+
+}else{
+
+Add-Info "Windows Defender active"
+
 }
 
-# ----------------------------
-Section "FIREWALL"
+
+# -----------------------------
+Section "FIREWALL STATUS"
 
 $fw=Get-NetFirewallProfile
-$fw | Out-File $Report -Append
+
+$fw | Out-File "$LogDir\firewall_status.txt"
 
 foreach($p in $fw){
 
 if($p.Enabled -eq $false){
-Add-Threat 4 "Firewall disabled on $($p.Name)"
-}
+
+Add-Threat 5 "Firewall disabled on profile: $($p.Name)"
 
 }
 
-# ----------------------------
+}
+
+
+# -----------------------------
 Section "BROWSER EXTENSIONS"
 
-$chrome="$env:LOCALAPPDATA\Google\Chrome\User Data"
+$ChromiumPaths=@(
 
-if(Test-Path $chrome){
+"$env:LOCALAPPDATA\Google\Chrome\User Data",
+"$env:LOCALAPPDATA\Microsoft\Edge\User Data"
 
-Get-ChildItem $chrome -Directory |
+)
+
+foreach($basePath in $ChromiumPaths){
+
+if(Test-Path $basePath){
+
+Get-ChildItem $basePath -Directory |
+Where {$_.Name -match "Default|Profile"} |
 ForEach-Object{
 
 $ext="$($_.FullName)\Extensions"
 
 if(Test-Path $ext){
-Get-ChildItem $ext -Directory
+
+Get-ChildItem $ext -Directory |
+Select FullName |
+Out-File "$BrowserDir\chromium_extensions.txt" -Append
+
 }
 
-} | Select FullName |
-Out-File "$BrowserDir\chrome_extensions.txt"
+}
 
 }
 
-# ----------------------------
-Section "EVENT LOGS"
+}
 
-Get-WinEvent -LogName Security -MaxEvents 400 |
+
+# -----------------------------
+Section "SECURITY EVENT LOG"
+
+$events=Get-WinEvent -LogName Security -MaxEvents 200
+
+$events |
 Out-File "$LogDir\Security_Events.txt"
 
-Get-WinEvent -LogName System -MaxEvents 400 |
-Out-File "$LogDir\System_Events.txt"
+$failed=($events | Where {$_.Id -eq 4625}).Count
 
-# ----------------------------
+if($failed -gt 5){
+
+Add-Threat 2 "Multiple failed login attempts detected"
+
+}elseif($failed -gt 0){
+
+Add-Info "Some failed login attempts recorded"
+
+}
+
+
+# -----------------------------
 Section "THREAT SCORE"
 
-"Total Score: $RiskScore" | Out-File $ThreatFile
+"----------------------------" | Out-File $ThreatFile
+"THREAT ANALYSIS" | Out-File $ThreatFile -Append
+"----------------------------" | Out-File $ThreatFile -Append
+
+"Total Score: $RiskScore" | Out-File $ThreatFile -Append
 
 foreach($r in $ThreatReasons){
+
 $r | Out-File $ThreatFile -Append
+
 }
 
 "" | Out-File $ThreatFile -Append
 
-if($RiskScore -lt 5){
+if($RiskScore -eq 0){
+
+"System appears clean. No threat indicators detected." | Out-File $ThreatFile -Append
 "Risk Level: LOW" | Out-File $ThreatFile -Append
-}
-elseif($RiskScore -lt 15){
+
+}elseif($RiskScore -lt 10){
+
+"Risk Level: LOW" | Out-File $ThreatFile -Append
+
+}elseif($RiskScore -lt 25){
+
 "Risk Level: MODERATE" | Out-File $ThreatFile -Append
-}
-else{
+
+}else{
+
 "Risk Level: HIGH" | Out-File $ThreatFile -Append
+
 }
