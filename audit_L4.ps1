@@ -15,7 +15,6 @@ $Report="$LogDir\Audit_Report.txt"
 $ThreatFile="$LogDir\Threat_Report.txt"
 $Timeline="$LogDir\timeline.txt"
 $SigReport="$SigDir\signature_report.txt"
-$WinReport="$WinDir\windows_integrity.txt"
 
 $RiskScore=0
 $ThreatReasons=@()
@@ -38,32 +37,23 @@ function Add-Info($msg){
 "INFO : $msg" | Out-File $ThreatFile -Append
 }
 
-"LEVEL 8.5 SECURITY AUDIT (FULL VISIBILITY + DETECTION)" | Out-File $Report
+"LEVEL 8.5 SECURITY AUDIT (FIXED)" | Out-File $Report
 "Date: $(Get-Date)" | Out-File $Report -Append
 
-# -----------------------------------
-# SYSTEM INFO
-# -----------------------------------
+# -----------------------------
 Section "SYSTEM INFO"
 systeminfo | Out-File $Report -Append
 
-# -----------------------------------
-# RUNNING PROCESSES (FULL LIST)
-# -----------------------------------
+# -----------------------------
 Section "RUNNING PROCESSES"
-
 $proc=Get-CimInstance Win32_Process
-
-$proc | Select Name,ProcessId,ExecutablePath |
-Out-File "$LogDir\processes.txt"
+$proc | Select Name,ProcessId,ExecutablePath | Out-File "$LogDir\processes.txt"
 
 if($proc.Count -gt 250){
 Add-Info "Large number of processes running"
 }
 
-# -----------------------------------
-# TERMINAL + USER TRACKING
-# -----------------------------------
+# -----------------------------
 Section "TERMINAL ACTIVITY"
 
 $events = Get-WinEvent -FilterHashtable @{
@@ -97,9 +87,7 @@ Add-Threat 3 "Download command used by $user"
 
 }
 
-# -----------------------------------
-# POWERSHELL HISTORY
-# -----------------------------------
+# -----------------------------
 Section "POWERSHELL HISTORY"
 
 $psHist="$env:APPDATA\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"
@@ -107,7 +95,6 @@ $psHist="$env:APPDATA\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_histor
 if(Test-Path $psHist){
 
 $history=Get-Content $psHist -Tail 30
-
 $history | Out-File $Report -Append
 
 foreach($cmd in $history){
@@ -124,34 +111,23 @@ Add-Threat 4 "Obfuscated command in history"
 
 }
 
-# -----------------------------------
-# NETWORK CONNECTIONS (FULL LIST)
-# -----------------------------------
+# -----------------------------
 Section "NETWORK CONNECTIONS"
 
 $conns=Get-NetTCPConnection
-
-$conns |
-Select LocalAddress,LocalPort,RemoteAddress,RemotePort,State |
-Out-File "$NetDir\network_connections.txt"
+$conns | Select LocalAddress,LocalPort,RemoteAddress,RemotePort,State | Out-File "$NetDir\network_connections.txt"
 
 foreach($c in $conns){
-
 if($c.RemotePort -eq 4444 -or $c.RemotePort -eq 1337){
 Add-Threat 5 "Suspicious connection on port $($c.RemotePort)"
 }
-
 }
 
-# -----------------------------------
-# SCHEDULED TASKS (FULL LIST)
-# -----------------------------------
+# -----------------------------
 Section "SCHEDULED TASKS"
 
 $tasks=Get-ScheduledTask
-
-$tasks | Select TaskName,State |
-Out-File "$PersistenceDir\scheduled_tasks.txt"
+$tasks | Select TaskName,State | Out-File "$PersistenceDir\scheduled_tasks.txt"
 
 $TaskWhitelist=@(
 "Windows Defender Cache Maintenance",
@@ -164,22 +140,15 @@ $TaskWhitelist=@(
 )
 
 foreach($t in $tasks){
-
 if($TaskWhitelist -notcontains $t.TaskName){
-
 $action=$t.Actions.Execute
-
 if($action -match "powershell|cmd|wscript"){
 Add-Threat 2 "Script-based task: $($t.TaskName)"
 }
-
+}
 }
 
-}
-
-# -----------------------------------
-# AUTORUN REGISTRY
-# -----------------------------------
+# -----------------------------
 Section "AUTORUN ENTRIES"
 
 $autoruns=@(
@@ -188,29 +157,20 @@ $autoruns=@(
 )
 
 foreach($path in $autoruns){
-
 if(Test-Path $path){
-
 $data=Get-ItemProperty $path
 $data | Out-File "$PersistenceDir\autoruns.txt" -Append
 
 foreach($prop in $data.PSObject.Properties){
-
 $val=$prop.Value
-
 if($val -match "powershell|cmd|wscript"){
 Add-Threat 5 "Suspicious startup command: $val"
 }
-
+}
+}
 }
 
-}
-
-}
-
-# -----------------------------------
-# SIGNATURE SCAN (USER FILES)
-# -----------------------------------
+# -----------------------------
 Section "SIGNATURE SCAN"
 
 $scanTargets=@(
@@ -219,35 +179,22 @@ $scanTargets=@(
 )
 
 foreach($path in $scanTargets){
-
 if(Test-Path $path){
-
-Get-ChildItem $path -Filter *.exe -Recurse |
-Select -First 200 |
-ForEach-Object{
-
+Get-ChildItem $path -Filter *.exe -Recurse | Select -First 200 | ForEach-Object{
 try{
 $sig=Get-AuthenticodeSignature $_.FullName
-
 if($sig.Status -eq "NotSigned"){
 "UNSIGNED: $($_.FullName)" | Out-File $SigReport -Append
 }
-
 elseif($sig.Status -ne "Valid"){
 Add-Threat 4 "Invalid signature: $($_.FullName)"
 }
-
 }catch{}
-
+}
+}
 }
 
-}
-
-}
-
-# -----------------------------------
-# WINDOWS SYSTEM CHECK
-# -----------------------------------
+# -----------------------------
 Section "WINDOWS SYSTEM INTEGRITY"
 
 $winPaths=@(
@@ -256,22 +203,16 @@ $winPaths=@(
 )
 
 foreach($path in $winPaths){
-
-Get-ChildItem $path -Filter *.exe |
-Select -First 500 |
-ForEach-Object{
-
+Get-ChildItem $path -Filter *.exe | Select -First 500 | ForEach-Object{
 try{
 $sig=Get-AuthenticodeSignature $_.FullName
 
 if($sig.Status -eq "NotSigned"){
 Add-Threat 3 "Unsigned system file: $($_.FullName)"
 }
-
 elseif($sig.Status -ne "Valid"){
 Add-Threat 6 "Invalid system file signature: $($_.FullName)"
 }
-
 else{
 $pub=$sig.SignerCertificate.Subject
 if($pub -notmatch "Microsoft"){
@@ -280,14 +221,10 @@ Add-Threat 2 "Non-Microsoft system file: $($_.FullName)"
 }
 
 }catch{}
-
+}
 }
 
-}
-
-# -----------------------------------
-# DEFENDER + FIREWALL
-# -----------------------------------
+# -----------------------------
 Section "SECURITY STATUS"
 
 $def=Get-MpComputerStatus
@@ -302,9 +239,10 @@ Add-Threat 6 "Firewall disabled: $($p.Name)"
 }
 }
 
-# -----------------------------------
-# FINAL SCORE
-# -----------------------------------
+# -----------------------------
+# FINAL SCORE (FIXED)
+# -----------------------------
+
 "----------------------------" | Out-File $ThreatFile
 "THREAT ANALYSIS" | Out-File $ThreatFile -Append
 "----------------------------" | Out-File $ThreatFile -Append
@@ -319,11 +257,14 @@ $r | Out-File $ThreatFile -Append
 
 if($RiskScore -eq 0){
 "System appears clean." | Out-File $ThreatFile -Append
-"Risk Level: LOW"
-}elseif($RiskScore -lt 15){
-"Risk Level: LOW"
-}elseif($RiskScore -lt 35){
-"Risk Level: MODERATE"
-}else{
-"Risk Level: HIGH"
-} | Out-File $ThreatFile -Append
+"Risk Level: LOW" | Out-File $ThreatFile -Append
+}
+elseif($RiskScore -lt 15){
+"Risk Level: LOW" | Out-File $ThreatFile -Append
+}
+elseif($RiskScore -lt 35){
+"Risk Level: MODERATE" | Out-File $ThreatFile -Append
+}
+else{
+"Risk Level: HIGH" | Out-File $ThreatFile -Append
+}
